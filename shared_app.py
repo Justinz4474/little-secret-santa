@@ -124,6 +124,12 @@ def authenticate(room):
 def view(room, member):
     result = {'title':room['title'], 'budget':room['budget'], 'date':room['date'], 'drawn':room['drawn'], 'host':member['id']==room['host'], 'name':member['name'], 'wishes':member['wishes'], 'members':[{'name':m['name'],'count':len(m['wishes'])} for m in room['members']]}
     if room['drawn']:
+        member_ids = {m['id'] for m in room['members']}
+        pairs = room.get('pairs', {})
+        for participant, display in zip(room['members'], result['members']):
+            givers = [giver for giver, recipient in pairs.items() if recipient == participant['id']]
+            assigned = len(givers) == 1 and givers[0] in member_ids and givers[0] != participant['id']
+            display['name'] += ' — ' + ('Exactly one gift-giver assigned (saved draw)' if assigned else 'Gift-giver assignment needs checking')
         match = next(m for m in room['members'] if m['id']==room['pairs'][member['id']])
         result['match'] = {'name':match['name'], 'wishes':match['wishes']}
     return result
