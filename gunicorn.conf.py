@@ -9,6 +9,7 @@ def post_worker_init(worker):
     def view_with_rules(room, member):
         result = original_view(room, member)
         result['rules'] = room.get('rules', '')
+        result['drawVersion'] = room.get('draw_version', 0)
         return result
     base.view = view_with_rules
 
@@ -17,7 +18,7 @@ def post_worker_init(worker):
             raise base.Problem('Exchange not found.', 404)
         d = base.data()
         field = 'name' if action == 'remove' else action
-        value = base.string(d, field, 4000 if action == 'rules' else 60 if action == 'remove' else 40, action == 'remove')
+        value = '' if action == 'reset' else base.string(d, field, 4000 if action == 'rules' else 60 if action == 'remove' else 40, action == 'remove')
         with base.database() as con, con.cursor() as cur:
             cur.execute('SELECT data FROM secret_santa_v1.exchanges WHERE id=%s FOR UPDATE', (rid,))
             row = cur.fetchone()
@@ -27,7 +28,16 @@ def post_worker_init(worker):
             member = base.authenticate(room)
             if member['id'] != room['host']:
                 raise base.Problem('Only the organizer can manage this exchange.', 403)
-            if action == 'remove':
+            if action == 'reset':
+                if not room['drawn']:
+                    raise base.Problem('There is no active draw to reset.')
+                version = d.get('version')
+                if type(version) is not int or version != room.get('draw_version', 0):
+                    raise base.Problem('The draw has changed. Refresh the group before resetting.', 409)
+                room['pairs'] = {}
+                room['drawn'] = False
+                room['draw_version'] = version + 1
+            elif action == 'remove':
                 if room['drawn']:
                     raise base.Problem('People cannot be removed after names are drawn.')
                 target = next((m for m in room['members'] if m['name'].casefold() == value.casefold()), None)
@@ -44,6 +54,7 @@ def post_worker_init(worker):
     app.add_url_rule('/api/remove/<rid>', 'remove_participant', lambda rid: manage(rid, 'remove'), methods=['POST'])
     app.add_url_rule('/api/budget/<rid>', 'update_budget', lambda rid: manage(rid, 'budget'), methods=['POST'])
     app.add_url_rule('/api/rules/<rid>', 'update_rules', lambda rid: manage(rid, 'rules'), methods=['POST'])
+    app.add_url_rule('/api/reset/<rid>', 'reset_draw', lambda rid: manage(rid, 'reset'), methods=['POST'])
     enhancement = r'''<script>
 (function(){
 function addRemoveButtons(){
@@ -82,6 +93,17 @@ function makeEditor(field,section,labelText,maxLength){
     };
 }
 function controls(next){
+    if(!$('resetDraw')){
+        const button=document.createElement('button');button.id='resetDraw';button.type='button';button.className='soft hidden';button.textContent='Reset draw';
+        $('refresh').after(button);
+        button.onclick=()=>{
+            if(busy||!state?.host||!state.drawn)return;
+            if(!confirm('Clear all current matches and reopen joining? Everyone keeps their name, account, and wishlist. Budget and rules stay saved. People may remember their old match. You can draw again afterward.'))return;
+            const version=state.drawVersion;
+            task(async()=>{const r=await api('/api/reset/'+encodeURIComponent(room),{version});hideMatch();render(r.state);message('Draw reset. Everyone and their wishlists are saved. The organizer can draw again when ready.');$('roomTitle').scrollIntoView({behavior:'smooth'});});
+        };
+    }
+    $('resetDraw').classList.toggle('hidden',!next.host||!next.drawn);
     if(!$('budgetEditForm')){
         const container=document.createElement('div');$('roomDetails').after(container);
         makeEditor('budget',container,'Edit budget',40);
@@ -99,7 +121,7 @@ function controls(next){
         if(!edited[field])$('edit_'+field).value=next[field]||'';
     }
 }
-const previousRender=render;render=function(next){previousRender(next);controls(next);};if(state)controls(state);
+const previousRender=render;render=function(next){if(!next.drawn||(state&&state.drawVersion!==next.drawVersion))hideMatch();previousRender(next);controls(next);};if(state)controls(state);
 })();
 </script>'''
 
